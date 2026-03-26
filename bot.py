@@ -22,6 +22,8 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 load_dotenv()
+os.environ["HTTP_PROXY"] = "socks5://127.0.0.1:40000"
+os.environ["HTTPS_PROXY"] = "socks5://127.0.0.1:40000"
 
 # ── Config ──
 BET_SIZE = float(os.getenv("BET_SIZE", "1.00"))
@@ -44,7 +46,6 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler("bot.log"),
     ]
 )
 log = logging.getLogger("polybot")
@@ -126,7 +127,7 @@ def get_orderbook_price(market, direction):
 
 
 def place_bet(market, direction, bet_size):
-    """Place a bet on Polymarket."""
+    """Place a bet on Polymarket. Buys whatever shares $bet_size can afford."""
     if DRY_RUN:
         log.info(f"🧪 [DRY] Would bet ${bet_size:.2f} on {direction}")
         return {"dry_run": True, "direction": direction, "size": bet_size}
@@ -148,34 +149,41 @@ def place_bet(market, direction, bet_size):
         book = clob_client.get_order_book(token_id)
         asks = book.asks or []
 
+        # Get min order size from book (default 1)
+        min_size = float(book.min_order_size) if book.min_order_size else 1.0
+
         if not asks:
-            log.warning("⚠️ No asks available, posting limit buy at $0.55")
+            log.warning("⚠️ No asks in book, posting limit @ $0.55")
             price = 0.55
         else:
             price = float(asks[0].price)
+            log.info(f"📊 Best ask: ${price:.4f}")
 
-        # Max $1 bet
+        # Skip if price too high (>$0.95 = almost no upside)
+        if price > 0.95:
+            log.warning(f"⚠️ Price too high ${price:.2f} (max upside ${1-price:.2f}). Posting limit @ $0.55")
+            price = 0.55
+
+        # Calculate shares from budget
         actual_size = min(bet_size, BET_SIZE)
         shares = actual_size / price
 
-        if shares < 5:
-            shares = 5
+        # Ensure minimum order size
+        if shares < min_size:
+            shares = min_size
             actual_size = shares * price
-            if actual_size > BET_SIZE:
-                log.warning(f"⚠️ Need ${actual_size:.2f} for 5 shares. Skipping.")
-                return None
 
         order_args = OrderArgs(
             token_id=token_id,
             price=price,
-            size=shares,
+            size=round(shares, 2),
             side="BUY",
         )
 
         log.info(f"📤 BUY {direction}: {shares:.1f} shares @ ${price:.3f} = ${actual_size:.2f}")
         result = clob_client.create_and_post_order(order_args)
         log.info(f"✅ Order placed: {result}")
-        return {"result": result, "price": price, "shares": shares, "cost": actual_size}
+        return {"result": result, "price": price, "shares": round(shares, 2), "cost": actual_size}
 
     except Exception as e:
         log.error(f"❌ Order failed: {e}")

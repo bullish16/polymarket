@@ -21,6 +21,52 @@ DRY_RUN = "--dry-run" in sys.argv
 PK = os.getenv("PRIVATE_KEY", "")
 SIG_TYPE = int(os.getenv("SIGNATURE_TYPE", "1"))
 
+# ── WARP Proxy (bypass geoblock) ──
+WARP_PROXY = "socks5://127.0.0.1:40000"
+os.environ["HTTP_PROXY"] = WARP_PROXY
+os.environ["HTTPS_PROXY"] = WARP_PROXY
+os.environ["ALL_PROXY"] = WARP_PROXY
+
+# Monkeypatch py_clob_client to use SOCKS proxy
+import httpx
+_orig_httpx_client = httpx.Client
+
+class ProxiedClient(httpx.Client):
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("proxy", WARP_PROXY)
+        super().__init__(*args, **kwargs)
+
+httpx.Client = ProxiedClient
+
+# Also patch the low-level request function in py_clob_client
+import py_clob_client.http_helpers.helpers as _clob_http
+_orig_request = _clob_http.request
+
+def _proxied_request(endpoint, method, headers=None, data=None):
+    """Patched request that routes through WARP SOCKS5 proxy."""
+    with httpx.Client(proxy=WARP_PROXY) as client:
+        if method == "GET":
+            resp = client.get(endpoint, headers=headers)
+        elif method == "POST":
+            resp = client.post(endpoint, headers=headers, content=data if isinstance(data, (str, bytes)) else None, json=data if isinstance(data, dict) else None)
+        elif method == "DELETE":
+            resp = client.delete(endpoint, headers=headers)
+        elif method == "PUT":
+            resp = client.put(endpoint, headers=headers, content=data if isinstance(data, (str, bytes)) else None, json=data if isinstance(data, dict) else None)
+        else:
+            resp = client.request(method, endpoint, headers=headers)
+        
+        if resp.status_code >= 400:
+            from py_clob_client.exceptions import PolyApiException
+            raise PolyApiException(resp)
+        
+        try:
+            return resp.json()
+        except:
+            return resp.text
+
+_clob_http.request = _proxied_request
+
 # ── Logging (single handler to avoid duplicates) ──
 log = logging.getLogger("polybot")
 log.setLevel(logging.INFO)
