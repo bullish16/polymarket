@@ -22,8 +22,6 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 load_dotenv()
-os.environ["HTTP_PROXY"] = "socks5://127.0.0.1:40000"
-os.environ["HTTPS_PROXY"] = "socks5://127.0.0.1:40000"
 
 # ── Config ──
 BET_SIZE = float(os.getenv("BET_SIZE", "1.00"))
